@@ -107,6 +107,12 @@ llvm::cl::opt<std::string> annotationOpts("annotate",
     llvm::cl::value_desc("val1,val2,..."), llvm::cl::init(""),
     llvm::cl::cat(SlicingOpts));
 
+llvm::cl::opt<bool> cutoff_diverging("cutoff-diverging",
+    llvm::cl::desc("Cutoff diverging paths. That is, call abort() on those paths "
+                   "that may not reach the slicing criterion "
+                   " (default=true)."),
+    llvm::cl::init(true), llvm::cl::cat(SlicingOpts));
+
 
 static void maybe_print_statistics(llvm::Module *M, const char *prefix = nullptr)
 {
@@ -245,6 +251,17 @@ int main(int argc, char *argv[])
     /// ---------------
     // slice the code
     /// ---------------
+
+    if (cutoff_diverging) {
+        /*
+        cutoffDiverging(M.get(),
+                        options.slicingCriteria,
+                        options.legacySlicingCriteria,
+                        options.legacySecondarySlicingCriteria,
+                        criteria_are_next_instr) {
+                        */
+ 
+    }
 
     ::Slicer slicer(M.get(), options);
     if (!slicer.buildDG()) {

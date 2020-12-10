@@ -58,14 +58,19 @@ static inline bool isNumber(const std::string& s) {
     return true;
 }
 
-static bool usesTheVariable(LLVMDependenceGraph& dg,
-                            const llvm::Instruction& I,
+static bool usesTheVariable(const llvm::Instruction& I,
                             const std::string& var,
-                            bool isglobal = false) {
+                            bool isglobal = false,
+                            LLVMPointerAnalysis *pta = nullptr) {
     if (!I.mayReadOrWriteMemory())
         return false;
 
-    auto memacc = dg.getPTA()->getAccessedMemory(&I);
+    if (!pta) {
+        // FIXME: try basic cases that we can decide without PTA
+        return true;
+    }
+
+    auto memacc = pta->getAccessedMemory(&I);
     if (memacc.first) {
         // PTA has no information, it may be a definition of the variable,
         // we do not know
@@ -90,9 +95,9 @@ static bool usesTheVariable(LLVMDependenceGraph& dg,
     return false;
 }
 
-static bool instIsCallOf(LLVMDependenceGraph& dg,
-                         const llvm::Instruction& I,
-                         const std::string& name) {
+static bool instIsCallOf(const llvm::Instruction& I,
+                         const std::string& name,
+                         LLVMPointerAnalysis *pta = nullptr) {
     auto *C = llvm::dyn_cast<llvm::CallInst>(&I);
     if (!C)
         return false;
@@ -108,7 +113,11 @@ static bool instIsCallOf(LLVMDependenceGraph& dg,
     auto *V = C->getCalledValue()->stripPointerCasts();
 #endif
 
-    auto pts = dg.getPTA()->getLLVMPointsTo(V);
+    // FIXME: we can check whether the call of "name" is taken even without PTA
+    if (!pta)
+        return true; // may be, we do not know...
+
+    auto pts = pta->getLLVMPointsTo(V);
     if (pts.empty()) {
         return true; // may be, we do not know...
     }
@@ -153,11 +162,11 @@ static bool fileMatch(const std::string& file,
 #endif
 }
 
-static bool instMatchesCrit(LLVMDependenceGraph& dg,
-                            const llvm::Instruction& I,
+static bool instMatchesCrit(const llvm::Instruction& I,
                             const std::string& fun,
                             unsigned line,
-                            const std::string& obj) {
+                            const std::string& obj,
+                            LLVMPointerAnalysis *pta = nullptr) {
 
     // function match?
     if (fun != "" &&
@@ -212,11 +221,11 @@ static bool instMatchesCrit(LLVMDependenceGraph& dg,
     }
 
      // obj match?
-     if (!isvar && instIsCallOf(dg, I, objname)) {
+     if (!isvar && instIsCallOf(I, objname, pta)) {
          return true;
      } // else fall through to check the vars
 
-     if (!isfunc && usesTheVariable(dg, I, objname, isglobal)) {
+     if (!isfunc && usesTheVariable(I, objname, isglobal, pta)) {
          return true;
      }
 
@@ -295,7 +304,8 @@ static std::string parseObj(const std::vector<std::string>& parts) {
     return parts[parts.size() - 1];
 }
 
-static void getCriteriaInstructions(LLVMDependenceGraph& dg,
+static void getCriteriaInstructions(llvm::Module& M,
+                                    LLVMPointerAnalysis *pta,
                                     const std::string& criterion,
                                     std::set<const llvm::Value *>& result) {
     assert(!criterion.empty() && "No criteria given");
@@ -320,7 +330,7 @@ static void getCriteriaInstructions(LLVMDependenceGraph& dg,
 
     // try match globals
     if (fun == "") {
-        for (auto& G : dg.getModule()->globals()) {
+        for (auto& G : M.globals()) {
             if (file != "" && !fileMatch(file, G))
                 continue;
             if (globalMatchesCrit(G, line, obj)) {
@@ -335,7 +345,7 @@ static void getCriteriaInstructions(LLVMDependenceGraph& dg,
             if (file != "" && !fileMatch(file, I))
                 continue;
 
-            if (instMatchesCrit(dg, I, fun, line, obj)) {
+            if (instMatchesCrit(I, fun, line, obj, pta)) {
                 result.insert(&I);
             }
         }
@@ -408,9 +418,10 @@ static void initDebugInfo(LLVMDependenceGraph& dg) {
 
 
 static std::vector<SlicingCriteriaSet>
-getSlicingCriteriaInstructions(LLVMDependenceGraph& dg,
+getSlicingCriteriaInstructions(llvm::Module& M,
                                const std::string& slicingCriteria,
-                               bool criteria_are_next_instr) {
+                               bool criteria_are_next_instr,
+                               LLVMPointerAnalysis *pta) {
 
     std::vector<std::string> criteria = splitList(slicingCriteria, ';');
     assert(!criteria.empty() && "Did not get slicing criteria");
@@ -436,7 +447,7 @@ getSlicingCriteriaInstructions(LLVMDependenceGraph& dg,
         // be added to every primary SC
         bool ssctoall = primsec[0].empty() && primsec.size() > 1;
         if (!primsec[0].empty()) {
-            getCriteriaInstructions(dg, primsec[0], SC.primary);
+            getCriteriaInstructions(M, pta, primsec[0], SC.primary);
         }
 
         if (!SC.primary.empty()) {
@@ -459,7 +470,7 @@ getSlicingCriteriaInstructions(LLVMDependenceGraph& dg,
         }
 
         if ((!SC.primary.empty() || ssctoall) && primsec.size() > 1) {
-            getCriteriaInstructions(dg, primsec[1], SC.secondary);
+            getCriteriaInstructions(M, pta, primsec[1], SC.secondary);
 
             if (!SC.secondary.empty()) {
                 llvm::errs() << "SC: Matched '" << primsec[1]
@@ -610,9 +621,10 @@ bool getSlicingCriteriaNodes(LLVMDependenceGraph& dg,
 
     initDebugInfo(dg);
 
-    auto crits = getSlicingCriteriaInstructions(dg,
+    auto crits = getSlicingCriteriaInstructions(*dg.getModule(),
                                                 slicingCriteria,
-                                                criteria_are_next_instr);
+                                                criteria_are_next_instr,
+                                                dg.getPTA());
     if (crits.empty()) {
         return true; // no criteria found
     }
@@ -656,13 +668,13 @@ static bool instMatchesCrit(LLVMDependenceGraph& dg,
         if (static_cast<int>(Loc.getLine()) != c.first)
             continue;
 
-        if (instIsCallOf(dg, I, c.second)) {
+        if (instIsCallOf(I, c.second, dg.getPTA())) {
             llvm::errs() << "Matched line " << c.first << " with call of "
                          << c.second << " to:\n" << I << "\n";
             return true;
         } // else fall through to check the vars
 
-        if (usesTheVariable(dg, I, c.second)) {
+        if (usesTheVariable(I, c.second, dg.getPTA())) {
             llvm::errs() << "Matched line " << c.first << " with variable "
                          << c.second << " to:\n" << I << "\n";
             return true;
@@ -1016,7 +1028,7 @@ bool getSlicingCriteriaNodes(LLVMDependenceGraph& dg,
 }
 
 std::vector<const llvm::Value *>
-getSlicingCriteriaValues(LLVMDependenceGraph& dg,
+getSlicingCriteriaValues(llvm::Module& M,
                          const std::string& slicingCriteria,
                          const std::string& legacySlicingCriteria,
                          const std::string& legacySecondaryCriteria,
@@ -1043,7 +1055,7 @@ getSlicingCriteriaValues(LLVMDependenceGraph& dg,
     }
 
     std::vector<const llvm::Value *> ret;
-    auto C = getSlicingCriteriaInstructions(dg, criteria, criteria_are_next_instr);
+    auto C = getSlicingCriteriaInstructions(M, criteria, criteria_are_next_instr, /*pta = */ nullptr);
     for (auto& critset : C) {
         ret.insert(ret.end(), critset.primary.begin(), critset.primary.end());
         ret.insert(ret.end(), critset.secondary.begin(), critset.secondary.end());

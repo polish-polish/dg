@@ -18,6 +18,7 @@
 #include "dg/tools/llvm-slicer.h"
 #include "dg/tools/llvm-slicer-opts.h"
 #include "dg/tools/llvm-slicer-utils.h"
+#include "llvm-slicer-preprocess.h"
 
 // ignore unused parameters in LLVM libraries
 #if (__clang__)
@@ -253,14 +254,22 @@ int main(int argc, char *argv[])
     /// ---------------
 
     if (cutoff_diverging) {
-        /*
-        cutoffDiverging(M.get(),
-                        options.slicingCriteria,
-                        options.legacySlicingCriteria,
-                        options.legacySecondarySlicingCriteria,
-                        criteria_are_next_instr) {
-                        */
- 
+        DBG(llvm-slicer, "Searching for slicing criteria values");
+        auto csvalues = getSlicingCriteriaValues(*M.get(),
+                                                 options.slicingCriteria,
+                                                 options.legacySlicingCriteria,
+                                                 options.legacySecondarySlicingCriteria,
+                                                 criteria_are_next_instr);
+        if (csvalues.empty()) {
+            llvm::errs() << "Failed mapping slicing criteria to values\n";
+            return 1;
+        }
+
+        DBG(llvm-slicer, "Cutting off diverging branches");
+        if (!llvmdg::cutoffDivergingBranches(*M.get(), options.dgOptions.entryFunction, csvalues)) {
+            errs() << "[llvm-slicer]: Failed cutting off diverging branches\n";
+            return 1;
+        }
     }
 
     ::Slicer slicer(M.get(), options);

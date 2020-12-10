@@ -39,7 +39,7 @@ namespace llvmdg {
 static std::vector<llvm::Instruction *> getCallers(const Function *fun) {
     std::vector<llvm::Instruction *> retval;
 
-    bool has_address_taken = true;
+    bool has_address_taken = false;
     for (auto use_it = fun->use_begin(), use_end = fun->use_end();
          use_it != use_end; ++use_it) {
 #if ((LLVM_VERSION_MAJOR == 3) && (LLVM_VERSION_MINOR < 5))
@@ -51,10 +51,12 @@ static std::vector<llvm::Instruction *> getCallers(const Function *fun) {
             if (fun == C->getCalledFunction()) {
                 retval.push_back(C);
             } else {
+                llvm::errs() << "User: " << *user << "\n";
                 has_address_taken = true;
             }
         } else if (auto *S = dyn_cast<StoreInst>(user)) {
             if (S->getValueOperand()->stripPointerCasts() == fun) {
+                llvm::errs() << "User: " << *user << "\n";
                 has_address_taken = true;
             } else {
                 llvm::errs() << "Unhandled function use: " << *user  << "\n";
@@ -69,6 +71,7 @@ static std::vector<llvm::Instruction *> getCallers(const Function *fun) {
     }
 
     if (has_address_taken) {
+        llvm::errs() << "ERROR: hasAddrTaken(" << fun->getName() << ")?\n";
         // add calls of function pointers that may call this function
         assert(false && "Not implemented yet");
         abort();
@@ -80,24 +83,41 @@ static std::vector<llvm::Instruction *> getCallers(const Function *fun) {
 
 // FIXME: refactor
 // FIXME: configurable entry
-bool cutoffDiveringBranches(Module& M, const std::vector<Instruction *>& criteria) {
-    bool changed = false;
+bool cutoffDivergingBranches(Module& M, const std::string& entry,
+                             const std::vector<const llvm::Value *>& criteria) {
+
+    if (criteria.empty()) {
+        assert(false && "Have no slicing criteria instructions");
+        return false;
+    }
+
     std::set<BasicBlock*> relevant;
     std::set<BasicBlock*> visited;
     std::stack<BasicBlock*> queue; // not efficient...
     auto& Ctx = M.getContext();
+    auto *entryFun = M.getFunction(entry);
 
+    if (!entryFun) {
+        llvm::errs() << "Did not find the entry function\n";
+        return false;
+    }
+
+    // initialize the queue with blocks of slicing criteria
     for (auto *c : criteria) {
-      if (visited.insert(c->getParent()).second) {
-          queue.push(c->getParent());
-      }
+        auto *I = llvm::dyn_cast<Instruction>(const_cast<llvm::Value*>(c));
+        if (!I) {
+            continue;
+        }
+        if (visited.insert(I->getParent()).second) {
+            queue.push(I->getParent());
+        }
     }
 
     while (!queue.empty()) {
         auto *cur = queue.top();
         queue.pop();
 
-        // paths from this block go to the target
+        // paths from this block go to the slicing criteria
         relevant.insert(cur);
 
         if ((pred_begin(cur) == pred_end(cur))) {
@@ -114,7 +134,9 @@ bool cutoffDiveringBranches(Module& M, const std::vector<Instruction *>& criteri
         }
     }
 
-    assert(!relevant.empty() && "Got no relevant nodes");
+    // FIXME
+    // Now do the same from entry and kill the blocks that are not relevant
+    // (a slicing criterion cannot be reached from them)
 
     // FIXME: make configurable... and insert __dg_abort()
     // which will be internally implemented as abort() or exit().
@@ -139,12 +161,11 @@ bool cutoffDiveringBranches(Module& M, const std::vector<Instruction *>& criteri
           auto *point = B.getFirstNonPHI();
           //CloneMetadata(point, new_CI);
           new_CI->insertBefore(point);
-          changed = true;
         }
       }
     }
 
-  return changed;
+  return true;
 }
 
 } // namespace llvmdg

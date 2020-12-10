@@ -11,10 +11,9 @@ namespace llvm {
 namespace dg {
 namespace llvmdg {
 
-
-bool cutoffDiveringBranches(llvm::Module& M,
-                           const std::vector<llvm::Instruction *>& criteria);
-
+bool cutoffDivergingBranches(llvm::Module& M,
+                             const std::string& entry,
+                             const std::vector<const llvm::Value *>& criteria);
 } // namespace llvmdg
 } // namespace dg
 

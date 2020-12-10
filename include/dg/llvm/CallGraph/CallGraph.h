@@ -52,9 +52,9 @@ public:
     /// (you may force building CG by build() method).
     ///
     virtual FuncVec functions() const = 0;
-    virtual FuncVec callers(const llvm::Function *) const = 0;
-    virtual FuncVec callees(const llvm::Function *) const = 0;
-    virtual bool calls(const llvm::Function*, const llvm::Function *) const = 0;
+    virtual FuncVec callers(const llvm::Function *) = 0;
+    virtual FuncVec callees(const llvm::Function *) = 0;
+    virtual bool calls(const llvm::Function*, const llvm::Function *) = 0;
 
     // trigger building the CG (can be used to force building when CG is
     // constructed on demand)
@@ -89,7 +89,7 @@ public:
         return ret;
     }
 
-    FuncVec callers(const llvm::Function *F) const override {
+    FuncVec callers(const llvm::Function *F) override {
         FuncVec ret;
         auto it = _mapping.find(F);
         if (it == _mapping.end())
@@ -101,7 +101,7 @@ public:
         return ret;
     }
 
-    FuncVec callees(const llvm::Function *F) const override {
+    FuncVec callees(const llvm::Function *F) override {
         FuncVec ret;
         auto it = _mapping.find(F);
         if (it == _mapping.end())
@@ -113,7 +113,7 @@ public:
         return ret;
     }
 
-    bool calls(const llvm::Function *F, const llvm::Function *what) const override {
+    bool calls(const llvm::Function *F, const llvm::Function *what) override {
         auto it = _mapping.find(F);
         if (it == _mapping.end())
             return false;
@@ -191,7 +191,7 @@ public:
         return ret;
     }
 
-    FuncVec callers(const llvm::Function *F) const override {
+    FuncVec callers(const llvm::Function *F) override {
         FuncVec ret;
         auto fnd = _cg.get(F);
         for (auto *nd : fnd->getCallers()) {
@@ -200,7 +200,7 @@ public:
         return ret;
     }
 
-    FuncVec callees(const llvm::Function *F) const override {
+    FuncVec callees(const llvm::Function *F) override {
         FuncVec ret;
         auto fnd = _cg.get(F);
         for (auto *nd : fnd->getCalls()) {
@@ -209,7 +209,7 @@ public:
         return ret;
     }
 
-    bool calls(const llvm::Function *F, const llvm::Function *what) const override {
+    bool calls(const llvm::Function *F, const llvm::Function *what) override {
         auto fn1 =  _cg.get(F);
         auto fn2 =  _cg.get(what);
         if (fn1 && fn2) {
@@ -319,6 +319,9 @@ class LazyLLVMCallGraph : public CallGraphImpl {
     dg::HashMap<const llvm::CallInst *, FuncVec> _funptrs;
     std::vector<const llvm::Function *> _address_taken;
     bool _address_taken_initialized{false};
+    // resolved callers of address-taken functions
+    dg::HashMap<const llvm::Function *,
+                std::vector<const llvm::CallInst *>> _callsOf;
 
     inline const llvm::Value *_getCalledValue(const llvm::CallInst *C) const {
 #if LLVM_VERSION_MAJOR >= 8
@@ -385,6 +388,10 @@ class LazyLLVMCallGraph : public CallGraphImpl {
         return ret;
     }
 
+    bool hasFn(const llvm::Function *fun) const {
+        return _cg.get(fun) != nullptr;
+    }
+
     void _populateCalledFunctions(const llvm::Function *fun) {
         for (auto& I : llvm::instructions(fun)) {
             if (auto *C = llvm::dyn_cast<llvm::CallInst>(&I)) {
@@ -408,6 +415,39 @@ class LazyLLVMCallGraph : public CallGraphImpl {
                 }
             }
         }
+    }
+
+    const std::vector<const llvm::CallInst *>&
+    getCallsOfAddressTaken(const llvm::Function *F) {
+        assert(funHasAddressTaken(F));
+
+        // if we already computed this, return the cached result
+        auto it = _callsOf.find(F);
+        if (it != _callsOf.end())
+            return it->second;
+
+        // FIXME: could we do this more efficient?
+        // We could gather funptr calls and iterate only over those
+        // + get regular calls from the uses of F...
+        std::vector<const llvm::CallInst *> ret;
+        for (auto& mfun : *_module) {
+            for (auto& I : llvm::instructions(&mfun)) {
+                auto *C = llvm::dyn_cast<llvm::CallInst>(&I);
+                if (!C)
+                    continue;
+
+                for (auto *calledf : getCalledFunctions(C)) {
+                    if (calledf == F) {
+                        _cg.addCall(&mfun, F);
+                        ret.push_back(C);
+                    }
+                }
+            }
+        }
+
+        // FIXME: double access...
+        _callsOf[F] = ret;
+        return _callsOf[F];
     }
 
 
@@ -436,6 +476,27 @@ public:
         return _funptrs[C];
     }
 
+    std::vector<const llvm::CallInst *>
+    getCallsOf(const llvm::Function *F) {
+        if (funHasAddressTaken(F)) {
+            return getCallsOfAddressTaken(F);
+        }
+
+        // has not address taken, so all users are calls
+        std::vector<const llvm::CallInst *> ret;
+        for (auto& use : F->uses()) {
+#if ((LLVM_VERSION_MAJOR == 3) && (LLVM_VERSION_MINOR < 5))
+            auto *user = *use;
+#else
+            auto *user = use.getUser();
+#endif
+            auto *C = llvm::cast<llvm::CallInst>(user);
+            _cg.addCall(C->getParent()->getParent(), F);
+            ret.push_back(C);
+        }
+        return ret;
+    }
+
     FuncVec functions() const override {
         FuncVec ret;
         for (auto& it : _cg) {
@@ -444,20 +505,25 @@ public:
         return ret;
     }
 
-    FuncVec callers(const llvm::Function *F) const override {
+    FuncVec callers(const llvm::Function *F) override {
         FuncVec ret;
+        // make sure we have the callers
+        // (this will find also caller functions)
+        getCallsOf(F);
+
         auto fnd = _cg.get(F);
-       //if (!fnd)
-       //    _populateCalledFunctions(F);
-       //
+        assert(fnd);
         for (auto *nd : fnd->getCallers()) {
             ret.push_back(nd->getValue());
         }
         return ret;
     }
 
-    FuncVec callees(const llvm::Function *F) const override {
+    FuncVec callees(const llvm::Function *F) override {
         FuncVec ret;
+        if (!hasFn(F)) {
+            _populateCalledFunctions(F);
+        }
         auto fnd = _cg.get(F);
         for (auto *nd : fnd->getCalls()) {
             ret.push_back(nd->getValue());
@@ -465,7 +531,10 @@ public:
         return ret;
     }
 
-    bool calls(const llvm::Function *F, const llvm::Function *what) const override {
+    bool calls(const llvm::Function *F, const llvm::Function *what) override {
+        if (!hasFn(F)) {
+            _populateCalledFunctions(F);
+        }
         auto fn1 =  _cg.get(F);
         auto fn2 =  _cg.get(what);
         if (fn1 && fn2) {
@@ -521,15 +590,15 @@ public:
     ///
     /// Get callers of a function
     ///
-    FuncVec callers(const llvm::Function *F) const { return _impl->callers(F); };
+    FuncVec callers(const llvm::Function *F) { return _impl->callers(F); };
     ///
     /// Get functions called from the given function
     ///
-    FuncVec callees(const llvm::Function *F) const { return _impl->callees(F); };
+    FuncVec callees(const llvm::Function *F) { return _impl->callees(F); };
     ///
     /// Return true if function 'F' calls 'what'
     ///
-    bool calls(const llvm::Function *F, const llvm::Function *what) const {
+    bool calls(const llvm::Function *F, const llvm::Function *what) {
         return _impl->calls(F, what);
     };
 

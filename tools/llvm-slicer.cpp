@@ -270,6 +270,8 @@ int main(int argc, char *argv[])
             errs() << "[llvm-slicer]: Failed cutting off diverging branches\n";
             return 1;
         }
+
+        maybe_print_statistics(M.get(), "Statistics after cutoff-diverging ");
     }
 
     ::Slicer slicer(M.get(), options);

@@ -29,57 +29,13 @@
 #include <vector>
 #include <stack>
 
+#include "dg/llvm/CallGraph/CallGraph.h"
 #include "llvm-slicer-preprocess.h"
 
 using namespace llvm;
 
 namespace dg {
 namespace llvmdg {
-
-static std::vector<llvm::Instruction *> getCallers(const Function *fun) {
-    std::vector<llvm::Instruction *> retval;
-
-    bool has_address_taken = false;
-    for (auto use_it = fun->use_begin(), use_end = fun->use_end();
-         use_it != use_end; ++use_it) {
-#if ((LLVM_VERSION_MAJOR == 3) && (LLVM_VERSION_MINOR < 5))
-        Value *user = *use_it;
-#else
-        Value *user = use_it->getUser();
-#endif
-        if (auto *C = dyn_cast<CallInst>(user)) {
-            if (fun == C->getCalledFunction()) {
-                retval.push_back(C);
-            } else {
-                llvm::errs() << "User: " << *user << "\n";
-                has_address_taken = true;
-            }
-        } else if (auto *S = dyn_cast<StoreInst>(user)) {
-            if (S->getValueOperand()->stripPointerCasts() == fun) {
-                llvm::errs() << "User: " << *user << "\n";
-                has_address_taken = true;
-            } else {
-                llvm::errs() << "Unhandled function use: " << *user  << "\n";
-                assert(false && "Unhandled function use");
-                has_address_taken = true; // to be safe
-            }
-        } else {
-            llvm::errs() << "Unhandled function use: " << *user  << "\n";
-            assert(false && "Unhandled function use");
-            has_address_taken = true; // to be safe
-        }
-    }
-
-    if (has_address_taken) {
-        llvm::errs() << "ERROR: hasAddrTaken(" << fun->getName() << ")?\n";
-        // add calls of function pointers that may call this function
-        assert(false && "Not implemented yet");
-        abort();
-    }
-
-    return retval;
-}
-
 
 // FIXME: refactor
 // FIXME: configurable entry
@@ -91,6 +47,7 @@ bool cutoffDivergingBranches(Module& M, const std::string& entry,
         return false;
     }
 
+    llvmdg::LazyLLVMCallGraph CG(&M);
     std::set<BasicBlock*> relevant;
     std::set<BasicBlock*> visited;
     std::stack<BasicBlock*> queue; // not efficient...
@@ -113,6 +70,8 @@ bool cutoffDivergingBranches(Module& M, const std::string& entry,
         }
     }
 
+    // get all backward reachable blocks in the ICFG, only those blocks
+    // can be relevant in the slice
     while (!queue.empty()) {
         auto *cur = queue.top();
         queue.pop();
@@ -122,9 +81,9 @@ bool cutoffDivergingBranches(Module& M, const std::string& entry,
 
         if ((pred_begin(cur) == pred_end(cur))) {
             // pop-up from call
-            for (auto *C : getCallers(cast<Function>(cur->getParent()))) {
-              if (visited.insert(C->getParent()).second)
-                queue.push(C->getParent());
+            for (auto *C : CG.getCallsOf(cast<Function>(cur->getParent()))) {
+              if (visited.insert(const_cast<llvm::BasicBlock*>(C->getParent())).second)
+                queue.push(const_cast<llvm::BasicBlock*>(C->getParent()));
             }
         } else {
           for (auto *pred : predecessors(cur)) {
@@ -134,10 +93,10 @@ bool cutoffDivergingBranches(Module& M, const std::string& entry,
         }
     }
 
-    // FIXME
-    // Now do the same from entry and kill the blocks that are not relevant
-    // (a slicing criterion cannot be reached from them)
+    // Now kill the irrelevant blocks (those from which the execution will
+    // never reach the slicing criterion
 
+    // FIXME Do also a pass from entry to remove dead code
     // FIXME: make configurable... and insert __dg_abort()
     // which will be internally implemented as abort() or exit().
     Type *argTy = Type::getInt32Ty(Ctx);

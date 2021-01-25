@@ -261,7 +261,7 @@ public:
 
         // (2) calculate all-path reachability
         if (doFixpoint) {
-	    DBG(cda, "Performing fixpoint of Ranganath's algorithm")
+	    DBG(cda, "Performing fixpoint of Ranganath's algorithm");
             bool changed;
             do {
                 changed = false;
@@ -270,7 +270,7 @@ public:
                 }
             } while (changed);
         } else {
-	    DBG(cda, "Running the original (wrong) Ranganath's algorithm")
+	    DBG(cda, "Running the original (wrong) Ranganath's algorithm");
             while (!workbag.empty()) {
                 auto *n = workbag.pop();
                 //DBG(cda, "Processing node: " << n->getID());

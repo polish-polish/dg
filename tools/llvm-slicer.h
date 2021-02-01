@@ -152,7 +152,10 @@ public:
 
         return true;
     }
-
+    virtual uint32_t show_dependency(){
+        slicer.show_dependency();
+        return 0;
+    }
     bool slice()
     {
         assert(_dg && "Must run buildDG() and computeDependencies()");
@@ -169,7 +172,13 @@ public:
         dg::SlicerStatistics& st = slicer.getStatistics();
         llvm::errs() << "[llvm-slicer] Sliced away " << st.nodesRemoved
                      << " from " << st.nodesTotal << " nodes in DG\n";
+        //show instructions
+        /*
+        tm.start();
+        slicer.showinstruct(_dg.get());
 
+        tm.stop();
+        tm.report("[llvm-slicer] show instruction took");*/
         return true;
     }
 

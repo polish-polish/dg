@@ -147,7 +147,126 @@ static inline bool isNumber(const std::string& s) {
 
     return true;
 }
+class fileCritea{
+public:
+    int linenum;
+    std::string filename;
+    std::string varname;
+};
+// picard
+void getFileLineCriteriaNodes(LLVMDependenceGraph& dg,
+                                 std::vector<std::string>& criteria,
+                                 std::set<LLVMNode *>& nodes)
+{
+    assert(!criteria.empty() && "No criteria given");
 
+    //std::vector<std::pair<int, std::string>> parsedCrit;
+    std::vector<fileCritea> parsedCrit;
+    for (auto& crit : criteria) {
+        auto parts = splitList(crit, ':');
+        assert(parts.size() == 3);
+
+        // parse the line number
+        fileCritea tmpCritea= fileCritea();
+        tmpCritea.filename = parts[0];
+        tmpCritea.varname = parts[2];
+        if (isNumber(parts[1])) {
+            int line = atoi(parts[1].c_str());
+            if (line > 0){
+                tmpCritea.linenum = line;
+                parsedCrit.emplace_back(tmpCritea);
+                llvm::errs() << "#CRITERIA# file: " << parts[0] << "line: " << parts[1] << ",var:" << tmpCritea.varname <<"\n";
+            }
+                
+        } else {
+            llvm::errs() << "Invalid line: '" << parts[0] << "'. "
+                         << "Needs to be a number or empty for global variables.\n";
+        }
+    }
+
+    assert(!parsedCrit.empty() && "Failed parsing criteria");
+
+#if (LLVM_VERSION_MAJOR == 3 && LLVM_VERSION_MINOR < 7)
+    llvm::errs() << "WARNING: Variables names matching is not supported for LLVM older than 3.7\n";
+    llvm::errs() << "WARNING: The slicing criteria with variables names will not work\n";
+#else
+    // create the mapping from LLVM values to C variable names
+    for (auto& it : getConstructedFunctions()) {
+        for (auto& I : llvm::instructions(*llvm::cast<llvm::Function>(it.first))) {
+            if (const llvm::DbgDeclareInst *DD = llvm::dyn_cast<llvm::DbgDeclareInst>(&I)) {
+                auto val = DD->getAddress();
+                valuesToVariables[val] = DD->getVariable()->getName().str();
+            } else if (const llvm::DbgValueInst *DV
+                        = llvm::dyn_cast<llvm::DbgValueInst>(&I)) {
+                auto val = DV->getValue();
+                valuesToVariables[val] = DV->getVariable()->getName().str();
+            }
+        }
+    }
+
+    bool no_dbg = valuesToVariables.empty();
+    if (no_dbg) {
+        llvm::errs() << "No debugging information found in program,\n"
+                     << "slicing criteria with lines and variables will work\n"
+                     << "only for global variables.\n"
+                     << "You can still use the criteria based on call sites ;)\n";
+    }
+
+    for (const auto& GV : dg.getModule()->globals()) {
+        valuesToVariables[&GV] = GV.getName().str();
+    }
+
+    // try match globals
+    /*
+    for (auto& G : dg.getModule()->globals()) {
+        if (globalMatchesCrit(G, parsedCrit)) {
+            LLVMNode *nd = dg.getGlobalNode(&G);
+            assert(nd);
+            nodes.insert(nd);
+        }
+    }
+    */
+
+    // we do not have any mapping, we will not match anything
+    if (no_dbg) {
+        return;
+    }
+
+    // map line criteria to nodes
+    for (auto& it : getConstructedFunctions()) {
+        for (auto& I : llvm::instructions(*llvm::cast<llvm::Function>(it.first))) {
+            const llvm::DebugLoc& Loc = I.getDebugLoc();
+    #if ((LLVM_VERSION_MAJOR > 3)\
+        || ((LLVM_VERSION_MAJOR == 3) && (LLVM_VERSION_MINOR > 6)))
+            if (Loc)
+    #else
+            if (Loc.getLine() > 0)
+    #endif 
+            {
+                for (fileCritea & c : parsedCrit) {
+                    if (static_cast<int>(Loc.getLine()) != c.linenum)
+                        continue;
+                    const llvm::DILocation *dil = Loc.get();
+                    std::string filename = dil->getFilename().str();
+                    
+                    auto list1 = splitList(filename, '/');
+                    std::string name1=list1[list1.size()-1];
+                    auto list2 = splitList(c.filename, '/');
+                    std::string name2=list2[list2.size()-1];
+                    if(name1.compare(name2)!=0)
+                        continue;
+                    if (isStoreToTheVar(dg, I, c.varname) || isLoadOfTheVar(dg, I, c.varname)||!c.varname.compare("NULL")) {
+                            llvm::errs() << "Matched file " << c.filename << " with linecnt "<< c.linenum <<" var "<<c.varname<< " to:\n" << I << "\n";
+                            LLVMNode *nd = it.second->getNode(&I);
+                            assert(nd);
+                            nodes.insert(nd);
+                        }
+                }
+            }
+        }
+    }
+#endif // LLVM > 3.6
+}
 static void getLineCriteriaNodes(LLVMDependenceGraph& dg,
                                  std::vector<std::string>& criteria,
                                  std::set<LLVMNode *>& nodes)
@@ -157,9 +276,10 @@ static void getLineCriteriaNodes(LLVMDependenceGraph& dg,
     std::vector<std::pair<int, std::string>> parsedCrit;
     for (auto& crit : criteria) {
         auto parts = splitList(crit, ':');
-        assert(parts.size() == 2);
+        assert(parts.size() == 2 || parts.size() == 3);
 
         // parse the line number
+
         if (parts[0].empty()) {
             // global variable
             parsedCrit.emplace_back(-1, parts[1]);
@@ -238,7 +358,6 @@ std::set<LLVMNode *> getSlicingCriteriaNodes(LLVMDependenceGraph& dg,
     std::set<LLVMNode *> nodes;
     std::vector<std::string> criteria = splitList(slicingCriteria);
     assert(!criteria.empty() && "Did not get slicing criteria");
-
     std::vector<std::string> line_criteria;
     std::vector<std::string> node_criteria;
     std::tie(line_criteria, node_criteria)
@@ -263,8 +382,10 @@ std::set<LLVMNode *> getSlicingCriteriaNodes(LLVMDependenceGraph& dg,
     // map the criteria to nodes
     if (!node_criteria.empty())
         dg.getCallSites(node_criteria, &nodes);
-    if (!line_criteria.empty())
-        getLineCriteriaNodes(dg, line_criteria, nodes);
+    if (!line_criteria.empty()){
+        getFileLineCriteriaNodes(dg, line_criteria, nodes);
+    }
+        
 
     return nodes;
 }

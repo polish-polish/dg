@@ -1,4 +1,10 @@
-# DG
+# modified-DG
+
+add new feature
+
+# how to use
+
+`llvm-slicer -c filename.c:10:varname code.bc`
 
 [![Build Status](https://travis-ci.org/mchalupa/dg.svg?branch=master)](https://travis-ci.org/mchalupa/dg)
 

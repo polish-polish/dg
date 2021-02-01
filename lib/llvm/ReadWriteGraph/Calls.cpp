@@ -155,7 +155,8 @@ RWNode *LLVMReadWriteGraphBuilder::createUnknownCall(const llvm::CallInst *CInst
                 continue;
 
             RWNode *target = getOperand(ptr.value);
-            assert(target && "Don't have pointer target for call argument");
+            if(!target) continue;
+            //assert(target && "Don't have pointer target for call argument");
 
             // this call may use and define this memory
             if (_options.undefinedFunsWriteArgs() && !_options.undefinedFunsWriteAny())
@@ -310,6 +311,7 @@ RWNode *LLVMReadWriteGraphBuilder::funcFromModel(const FunctionModel *model,
                 continue;
 
             RWNode *target = getOperand(ptr.value);
+            if(!target) continue;
             assert(target && "Don't have pointer target for call argument");
 
             Offset from, to;

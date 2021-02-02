@@ -137,15 +137,16 @@ LLVMReadWriteGraphBuilder::mapPointers(const llvm::Value *where,
 
     return result;
 }
-
+static int created=0;
 RWNode *LLVMReadWriteGraphBuilder::getOperand(const llvm::Value *val) {
-    auto *op = getNode(val);
+    auto *op = getNode(val);created++;
     if (!op) {
         // lazily create allocations as these are targets in defsites
         // and may not have been created yet
         if (llvm::isa<llvm::AllocaInst>(val) ||
             // FIXME: check that it is allocation
             llvm::isa<llvm::CallInst>(val)) {
+        	if (created>3) return NULL;
             op = buildNode(val).getRepresentant();
         }
 
@@ -155,7 +156,7 @@ RWNode *LLVMReadWriteGraphBuilder::getOperand(const llvm::Value *val) {
             abort();
         }
     }
-    assert(op && "Do not have an operand");
+    assert(op && "Do not have an operand");created--;
     return op;
 }
 

@@ -13,6 +13,14 @@
 #include "dg/BBlock.h"
 #endif
 
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/Value.h>
+#include <llvm/IR/Instruction.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/InstIterator.h>
+#include <llvm/Support/raw_ostream.h>
+
 namespace dg {
 
 // this class will go through the nodes
@@ -123,7 +131,19 @@ private:
         }
     }
 };
-
+struct DependencyItem{
+    int line;
+    int col;
+    std::string filename;
+    friend bool operator==(const DependencyItem & d1,const DependencyItem & d2){
+        return (d1.line == d2.line && d1.filename == d2.filename);
+    }  
+    friend bool operator<(const DependencyItem & d1,const DependencyItem & d2){
+        if(d1.filename == d2.filename)
+            return d1.line<d2.line;
+        return (d1.filename < d2.filename);
+    }  
+};
 struct SlicerStatistics
 {
     SlicerStatistics()
@@ -136,6 +156,7 @@ struct SlicerStatistics
     uint64_t nodesRemoved;
     // number of whole blocks removed
     uint32_t blocksRemoved;
+    std::set<DependencyItem> dependency;
 };
 
 template <typename NodeT>
@@ -249,7 +270,6 @@ public:
 
         return sl_id;
     }
-
     // remove node from the graph
     // This virtual method allows to taky an action
     // when node is being removed from the graph. It can also
@@ -311,9 +331,13 @@ public:
         // FIXME: we don't need two loops, just go carefully
         // through the constructed blocks (keep temporary always-valid iterator)
         std::set<BBlock<NodeT> *> blocks;
+        std::set<BBlock<NodeT> *> saved_blocks;
         for (auto& it : CB) {
             if (it.second->getSlice() != sl_id)
                 blocks.insert(it.second);
+            else{
+                saved_blocks.insert(it.second);
+            }
         }
 
         for (BBlock<NodeT> *blk : blocks) {
@@ -328,6 +352,24 @@ public:
                 blk->remove();
             }
         }
+        //saved blocks .
+        /*
+        for (BBlock<NodeT> *block : saved_blocks) {
+            llvm::errs() << "block slice "<<block->getSlice()<<" \n";
+            llvm::Value *val = block->getKey();
+            if(val == nullptr)
+                continue;
+            llvm::BasicBlock *blk = llvm::cast<llvm::BasicBlock>(val);
+            for (llvm::Instruction& Inst : *blk){
+                auto& Loc = Inst.getDebugLoc();
+                llvm::errs() << "Inst is "<<" \n";
+                if(!Loc){
+                    continue;
+                }
+                llvm::errs() << "dependency line is "<<Loc.getLine()<<" \n";
+            }
+
+        }*/
 
         assert(CB.size() + blocks.size() == blocksNum &&
                 "Inconsistency in sliced blocks");

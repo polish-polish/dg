@@ -2,6 +2,10 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 # these tools can access the private headers
 include_directories(${CMAKE_SOURCE_DIR}/lib ${CMAKE_SOURCE_DIR}/tools/include)
 
+SET(CMAKE_BUILD_TYPE "Debug")  
+SET(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -Wall -g2 -ggdb")  
+SET(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O3 -Wall")  
+add_definitions("-Wall -g")
 if (LLVM_DG)
 	# generate a git-version.h with a HEAD commit hash tag
 	# (if it changed)
